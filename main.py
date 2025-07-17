@@ -129,8 +129,8 @@ def draw_landmarks(frame, landmarks):
         # Envio de comandos
         mapeamento_comandos = {
             "JOIA CIMA": "input1=1",
-            "JOIA DIREITA": "input1=a",
-            "JOIA ESQUERDA": "input1=b",
+            "JOIA DIREITA": "input1=2",
+            "JOIA ESQUERDA": "input1=8",
             "JOIA BAIXO": "input1=7"
         }
         
