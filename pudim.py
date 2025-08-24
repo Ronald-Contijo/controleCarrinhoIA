@@ -5,13 +5,20 @@ import math
 import time
 import requisicoes
 
-# ================== CONFIG ==================
+# ============== CONFIG EXTRAS (tela cheia e logo) ==============
+LOGO_PATH = "logo.png"            # <- caminho da sua logo (PNG com transparência, de preferência)
+LOGO_SCREEN_WIDTH_FRAC = 0.13    # fração da largura da tela ocupada pela logo (ex.: 12%)
+LOGO_MARGIN_PX = 24               # margem da logo em relação às bordas
+WINDOW_NAME = "Capricornio - Base direita | Manipulador esquerda (4 quadrantes)"
+# ===============================================================
+
+# ================== CONFIG EXISTENTE ==================
 ROBOT_IP = "192.168.4.1"
 NEUTRO_BASE = "input1=9"
 JOINTS_MIN, JOINTS_MAX = 0, 180
 JOINT_STEP = 3            # passo por gesto
 SEND_DEBOUNCE_MS = 60     # intervalo mínimo entre envios de juntas
-# ============================================
+# =======================================================
 
 mp_hands = mp.solutions.hands
 hands = mp_hands.Hands(static_image_mode=False,
@@ -55,6 +62,84 @@ def base_cmd_from_dirs(updown, leftright):
 
 def build_joints_payload(J):
     return f"input1=j{int(J[0])},{int(J[1])},{int(J[2])},{int(J[3])}"
+
+# ---------- util: resolução da tela (cross-platform) ----------
+def get_screen_resolution():
+    # tenta via Tkinter
+    try:
+        import tkinter as tk
+        root = tk.Tk()
+        root.withdraw()
+        sw = root.winfo_screenwidth()
+        sh = root.winfo_screenheight()
+        root.destroy()
+        return sw, sh
+    except Exception:
+        # fallback comum
+        return 1920, 1080
+
+# ---------- util: letterbox mantendo aspecto ----------
+def resize_letterbox(img, target_w, target_h):
+    h, w = img.shape[:2]
+    scale = min(target_w / w, target_h / h)
+    new_w = int(round(w * scale))
+    new_h = int(round(h * scale))
+    resized = cv2.resize(img, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
+    # canvas centrado
+    canvas = np.zeros((target_h, target_w, 3), dtype=np.uint8)
+    x0 = (target_w - new_w) // 2
+    y0 = (target_h - new_h) // 2
+    canvas[y0:y0+new_h, x0:x0+new_w] = resized
+    return canvas
+
+# ---------- util: overlay com alpha ----------
+def overlay_rgba(dst_bgr, overlay_rgba, x, y):
+    """Aplica overlay RGBA (com alpha) sobre dst_bgr em (x,y). Recorta se necessário."""
+    oh, ow = overlay_rgba.shape[:2]
+    dh, dw = dst_bgr.shape[:2]
+    if x >= dw or y >= dh or x+ow <= 0 or y+oh <= 0:
+        return  # totalmente fora
+    # ajustes se passar das bordas
+    x0 = max(x, 0)
+    y0 = max(y, 0)
+    x1 = min(x + ow, dw)
+    y1 = min(y + oh, dh)
+    ox0 = x0 - x
+    oy0 = y0 - y
+    roi = dst_bgr[y0:y1, x0:x1]
+    ov = overlay_rgba[oy0:oy0+(y1-y0), ox0:ox0+(x1-x0)]
+    if ov.shape[2] == 4:
+        overlay_rgb = ov[:, :, :3].astype(np.float32)
+        alpha = (ov[:, :, 3:4].astype(np.float32)) / 255.0
+        base = roi.astype(np.float32)
+        blended = alpha * overlay_rgb + (1 - alpha) * base
+        dst_bgr[y0:y1, x0:x1] = blended.astype(np.uint8)
+    else:
+        # sem alpha: simples colagem
+        dst_bgr[y0:y1, x0:x1] = ov[:, :, :3]
+
+# ---------- prepara tela cheia e logo ----------
+SCREEN_W, SCREEN_H = get_screen_resolution()
+
+cv2.namedWindow(WINDOW_NAME, cv2.WINDOW_NORMAL)
+# tela cheia
+cv2.setWindowProperty(WINDOW_NAME, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
+
+# carrega e pré-processa a logo (mantém aspecto e dimensiona à fração da tela)
+logo_rgba = None
+if LOGO_PATH:
+    tmp = cv2.imread(LOGO_PATH, cv2.IMREAD_UNCHANGED)  # tenta RGBA
+    if tmp is not None:
+        # garante 4 canais
+        if tmp.shape[2] == 3:
+            tmp = cv2.cvtColor(tmp, cv2.COLOR_BGR2BGRA)
+        # redimensiona proporcionalmente para ocupar a fração definida da largura da tela
+        desired_w = max(1, int(SCREEN_W * LOGO_SCREEN_WIDTH_FRAC))
+        h, w = tmp.shape[:2]
+        scale = desired_w / w
+        new_w = desired_w
+        new_h = max(1, int(round(h * scale)))
+        logo_rgba = cv2.resize(tmp, (new_w, new_h), interpolation=cv2.INTER_AREA)
 
 # Estado
 joints = [90, 90, 90, 90]    # J1..J4
@@ -190,9 +275,21 @@ while cap.isOpened():
             x0,y0,x1,y1 = 0, mid_y, mid_x, H
         else:
             x0,y0,x1,y1 = mid_x, mid_y, left_w, H
-        cv2.rectangle(frame, (x0,y0), (x1,y1), (0,255,0), 2)
+        cv2.rectangle(frame, (x0,y0), (x1,y1), (0,255,0), 6)
 
-    cv2.imshow("Capricornio - Base direita | Manipulador esquerda (4 quadrantes)", frame)
+    # ====== AJUSTE PARA TELA CHEIA (sem distorcer) ======
+    # redimensiona com letterbox para caber na tela toda
+    frame_full = resize_letterbox(frame, SCREEN_W, SCREEN_H)
+
+    # ====== LOGO NO CANTO INFERIOR DIREITO ======
+    if logo_rgba is not None:
+        lh, lw = logo_rgba.shape[:2]
+        # posição: canto inferior direito com margem
+        x = SCREEN_W - lw - LOGO_MARGIN_PX
+        y = SCREEN_H - lh - LOGO_MARGIN_PX
+        overlay_rgba(frame_full, logo_rgba, x, y)
+
+    cv2.imshow(WINDOW_NAME, frame_full)
     if cv2.waitKey(1) & 0xFF == 27:
         break
 
